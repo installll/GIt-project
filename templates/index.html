@@ -1,0 +1,694 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>智能去水印</title>
+
+    <!-- ==================== Tailwind CSS CDN ==================== -->
+    <script src="https://cdn.tailwindcss.com">
+    </script>
+
+    <style>
+        /* ========== 自定义样式 ========== */
+
+        /* 画布容器：用于叠加两个 Canvas（图片层 + 框选层） */
+        .canvas-wrapper {
+            position: relative;
+            display: inline-block;
+            width: 100%;
+            line-height: 0;
+            /* 消除 inline-block 底部间隙 */
+        }
+
+        /* 图片画布：显示上传的图片 */
+        #imageCanvas {
+            display: block;
+            width: 100%;
+            height: auto;
+            border-radius: 0.5rem;
+        }
+
+        /* 框选画布：透明覆盖层，用于绘制矩形选区 */
+        #overlayCanvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            cursor: crosshair;
+            /* 禁止触摸时页面滚动 */
+            touch-action: none;
+            border-radius: 0.5rem;
+        }
+
+        /* 上传按钮隐藏，通过 label 触发 */
+        #fileInput {
+            display: none;
+        }
+
+        /* 按钮悬停动效 */
+        .btn-primary {
+            transition: all 0.2s ease;
+        }
+        .btn-primary:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
+        }
+        .btn-primary:active {
+            transform: translateY(0);
+        }
+
+        /* 下载按钮初始隐藏 */
+        #downloadBtn {
+            display: none;
+        }
+    </style>
+</head>
+<body class="bg-gray-950 text-gray-100 min-h-screen">
+
+    <!-- ==================== 主容器：响应式布局 ==================== -->
+    <!-- 移动端(默认)：flex-col 垂直布局 | PC端(lg+)：flex-row 左右布局 -->
+    <div class="flex flex-col lg:flex-row min-h-screen">
+
+        <!-- ========== 左侧：控制面板（移动端在上方，PC端在左侧） ========== -->
+        <div class="w-full lg:w-96 lg:min-w-96 bg-gray-900 p-6 lg:p-8 flex flex-col gap-6
+                    border-b lg:border-b-0 lg:border-r border-gray-800">
+
+            <!-- 标题 -->
+            <div class="text-center lg:text-left">
+                <h1 class="text-3xl lg:text-4xl font-bold bg-gradient-to-r from-blue-400 to-cyan-400
+                           bg-clip-text text-transparent">
+                    智能去水印
+                </h1>
+                <p class="text-gray-400 text-sm mt-2">
+                    上传图片 → 框选水印 → 一键去除
+                </p>
+            </div>
+
+            <!-- 分隔线 -->
+            <hr class="border-gray-800">
+
+            <!-- ===== 操作按钮区 ===== -->
+            <div class="flex flex-col gap-4">
+
+                <!-- 步骤1：上传图片 -->
+                <div>
+                    <label for="fileInput"
+                           class="btn-primary block w-full text-center py-3 px-6
+                                  bg-blue-600 hover:bg-blue-500 text-white font-semibold
+                                  rounded-lg cursor-pointer select-none">
+                        📷 选择图片
+                    </label>
+                    <input type="file" id="fileInput" accept="image/*">
+                    <p class="text-gray-500 text-xs mt-2 text-center lg:text-left">
+                        支持 JPG / PNG / WebP 等常见格式
+                    </p>
+                </div>
+
+                <!-- 步骤2：去水印 -->
+                <button id="processBtn"
+                        class="btn-primary w-full py-3 px-6
+                               bg-emerald-600 hover:bg-emerald-500 text-white font-semibold
+                               rounded-lg disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-emerald-600
+                               disabled:transform-none disabled:shadow-none">
+                    ✨ 去水印
+                </button>
+
+                <!-- 步骤3：下载结果 -->
+                <button id="downloadBtn"
+                   class="btn-primary w-full py-3 px-6
+                          bg-purple-600 hover:bg-purple-500 text-white font-semibold
+                          rounded-lg cursor-pointer">
+                    ⬇ 下载图片
+                </button>
+
+                <!-- 重置 -->
+                <button id="resetBtn"
+                        class="w-full py-2 px-6 text-gray-400 hover:text-gray-200
+                               border border-gray-700 hover:border-gray-500
+                               rounded-lg transition-colors">
+                    重新开始
+                </button>
+            </div>
+
+            <!-- 分隔线 -->
+            <hr class="border-gray-800">
+
+            <!-- 操作提示 -->
+            <div class="text-sm text-gray-400 space-y-2">
+                <p class="font-semibold text-gray-300 mb-2">📋 操作步骤：</p>
+                <p>1️⃣ 点击 <span class="text-blue-400">选择图片</span> 上传</p>
+                <p>2️⃣ 在图片上 <span class="text-yellow-400">拖拽框选</span> 水印区域</p>
+                <p>3️⃣ 点击 <span class="text-emerald-400">去水印</span> 处理</p>
+                <p>4️⃣ 点击 <span class="text-purple-400">下载图片</span> 保存</p>
+            </div>
+
+            <!-- 状态信息 -->
+            <div id="statusBox"
+                 class="hidden mt-auto p-4 rounded-lg bg-gray-800 text-sm">
+                <p id="statusText" class="text-gray-300"></p>
+            </div>
+        </div>
+
+        <!-- ========== 右侧：图片展示区（移动端在下方，PC端在右侧） ========== -->
+        <div class="flex-1 flex items-center justify-center p-4 lg:p-8 bg-gray-950">
+            <div class="w-full max-w-4xl">
+
+                <!-- 画布容器 -->
+                <div class="canvas-wrapper bg-gray-800/50 rounded-lg border border-gray-700
+                            shadow-2xl shadow-black/30"
+                     id="canvasContainer">
+
+                    <!-- 图片层 -->
+                    <canvas id="imageCanvas"></canvas>
+
+                    <!-- 框选层（透明覆盖） -->
+                    <canvas id="overlayCanvas"></canvas>
+                </div>
+
+                <!-- 提示文字（无图片时显示） -->
+                <p id="placeholderHint"
+                   class="text-center text-gray-600 mt-6">
+                    👆 请先上传一张图片
+                </p>
+                <p id="selectionHint"
+                   class="hidden text-center text-gray-500 text-sm mt-2">
+                    🖱 在图片上拖拽鼠标（或手指滑动）框选水印区域
+                </p>
+
+                <!-- 坐标信息（调试用） -->
+                <p id="coordInfo" class="hidden text-center text-gray-600 text-xs mt-1"></p>
+            </div>
+        </div>
+    </div>
+
+    <!-- ==================== JavaScript 逻辑 ==================== -->
+    <script>
+        (function () {
+            // ========== DOM 元素引用 ==========
+            const fileInput = document.getElementById('fileInput');
+            const imageCanvas = document.getElementById('imageCanvas');
+            const overlayCanvas = document.getElementById('overlayCanvas');
+            const processBtn = document.getElementById('processBtn');
+            const downloadBtn = document.getElementById('downloadBtn');
+            const resetBtn = document.getElementById('resetBtn');
+            const statusBox = document.getElementById('statusBox');
+            const statusText = document.getElementById('statusText');
+            const placeholderHint = document.getElementById('placeholderHint');
+            const selectionHint = document.getElementById('selectionHint');
+            const coordInfo = document.getElementById('coordInfo');
+            const canvasContainer = document.getElementById('canvasContainer');
+
+            const imageCtx = imageCanvas.getContext('2d');
+            const overlayCtx = overlayCanvas.getContext('2d');
+
+            // ========== 状态变量 ==========
+            let originalImage = null; // 原始 Image 对象
+            let isDrawing = false; // 是否正在框选
+            let startX = 0,
+                startY = 0; // 框选起始坐标（画布坐标系）
+            let rectX = 0,
+                rectY = 0,
+                rectW = 0,
+                rectH = 0; // 当前矩形（画布坐标系）
+            let hasSelection = false; // 是否有有效框选
+            let processedImageB64 = null; // 处理后的 Base64 图片
+
+            // ========== 辅助函数：显示状态信息 ==========
+            function showStatus(msg, isError = false) {
+                statusBox.classList.remove('hidden');
+                statusText.textContent = msg;
+                statusText.className = isError ? 'text-red-400' : 'text-gray-300';
+                statusBox.classList.toggle('bg-red-900/30', isError);
+                statusBox.classList.toggle('bg-gray-800', !isError);
+            }
+
+            function hideStatus() {
+                statusBox.classList.add('hidden');
+            }
+
+            // ========== 辅助函数：获取 Canvas 与原始图片的缩放比例 ==========
+            function getScaleFactors() {
+                if (!originalImage) return { scaleX: 1, scaleY: 1 };
+                // 画布显示宽度 = CSS 宽度 = imageCanvas.clientWidth
+                // 画布内部宽度 = imageCanvas.width
+                // 图片原始大小 = originalImage.width / height
+                // 图片在画布中的绘制尺寸 = 按比例缩放后的大小
+                const canvasW = imageCanvas.width;
+                const canvasH = imageCanvas.height;
+                const imgW = originalImage.width;
+                const imgH = originalImage.height;
+
+                // 计算实际绘制时的缩放（保持宽高比，适应画布宽度）
+                const drawScale = Math.min(canvasW / imgW, canvasH / imgH);
+                const drawW = imgW * drawScale;
+                const drawH = imgH * drawScale;
+
+                return {
+                    scaleX: imgW / drawW, // 画布坐标 → 原始图片坐标
+                    scaleY: imgH / drawH,
+                    drawScale: drawScale,
+                    drawW: drawW,
+                    drawH: drawH,
+                    offsetX: (canvasW - drawW) / 2, // 图片在画布中的偏移
+                    offsetY: (canvasH - drawH) / 2,
+                };
+            }
+
+            // ========== 辅助函数：将鼠标/触摸坐标转换为画布坐标 ==========
+            function getCanvasCoords(e) {
+                const rect = overlayCanvas.getBoundingClientRect();
+                // overlayCanvas 的 CSS 尺寸与 clientWidth/Height
+                const cssW = rect.width;
+                const cssH = rect.height;
+
+                let clientX, clientY;
+
+                if (e.touches) {
+                    // 触摸事件
+                    clientX = e.touches[0].clientX;
+                    clientY = e.touches[0].clientY;
+                } else {
+                    // 鼠标事件
+                    clientX = e.clientX;
+                    clientY = e.clientY;
+                }
+
+                // 映射到 overlayCanvas 内部坐标
+                const canvasX = (clientX - rect.left) * (overlayCanvas.width / cssW);
+                const canvasY = (clientY - rect.top) * (overlayCanvas.height / cssH);
+
+                return { x: canvasX, y: canvasY };
+            }
+
+            // ========== 绘制图片到 imageCanvas ==========
+            function drawImageToCanvas() {
+                if (!originalImage) return;
+
+                const containerW = canvasContainer.clientWidth;
+                const imgW = originalImage.width;
+                const imgH = originalImage.height;
+
+                // 计算等比缩放尺寸（以容器宽度为基准，最大高度 70vh）
+                const maxH = window.innerHeight * 0.65;
+                const scale = Math.min(containerW / imgW, maxH / imgH, 1);
+                const drawW = Math.floor(imgW * scale);
+                const drawH = Math.floor(imgH * scale);
+
+                // 设置两个画布的内部尺寸一致
+                imageCanvas.width = drawW;
+                imageCanvas.height = drawH;
+                overlayCanvas.width = drawW;
+                overlayCanvas.height = drawH;
+
+                // 清空并绘制图片
+                imageCtx.clearRect(0, 0, drawW, drawH);
+                imageCtx.drawImage(originalImage, 0, 0, drawW, drawH);
+
+                // 清空框选层
+                overlayCtx.clearRect(0, 0, drawW, drawH);
+
+                // 重置框选状态
+                hasSelection = false;
+                rectW = 0;
+                rectH = 0;
+                updateCoordDisplay();
+
+                // 隐藏下载按钮
+                downloadBtn.style.display = 'none';
+                processedImageB64 = null;
+
+                // 更新 UI 提示
+                placeholderHint.classList.add('hidden');
+                selectionHint.classList.remove('hidden');
+                coordInfo.classList.remove('hidden');
+                hideStatus();
+            }
+
+            // ========== 绘制框选矩形到 overlayCanvas ==========
+            function drawSelectionRect() {
+                overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+
+                if (rectW > 0 && rectH > 0) {
+                    // 半透明蓝色填充
+                    overlayCtx.fillStyle = 'rgba(59, 130, 246, 0.15)';
+                    overlayCtx.fillRect(rectX, rectY, rectW, rectH);
+
+                    // 蓝色边框（2px 虚线）
+                    overlayCtx.strokeStyle = '#3b82f6';
+                    overlayCtx.lineWidth = 2;
+                    overlayCtx.setLineDash([6, 3]);
+                    overlayCtx.strokeRect(rectX, rectY, rectW, rectH);
+                    overlayCtx.setLineDash([]);
+
+                    // 四角高亮标记
+                    const corners = [
+                        { x: rectX, y: rectY },
+                        { x: rectX + rectW, y: rectY },
+                        { x: rectX, y: rectY + rectH },
+                        { x: rectX + rectW, y: rectY + rectH },
+                    ];
+                    overlayCtx.fillStyle = '#60a5fa';
+                    corners.forEach(c => {
+                        overlayCtx.fillRect(c.x - 3, c.y - 3, 7, 7);
+                    });
+                }
+            }
+
+            // ========== 更新坐标显示 ==========
+            function updateCoordDisplay() {
+                if (hasSelection && rectW > 0 && rectH > 0) {
+                    const { scaleX, scaleY, offsetX, offsetY } = getScaleFactors();
+                    // 将画布坐标转换为原始图片坐标
+                    const imgX = Math.round((rectX - offsetX) * scaleX);
+                    const imgY = Math.round((rectY - offsetY) * scaleY);
+                    const imgW = Math.round(rectW * scaleX);
+                    const imgH = Math.round(rectH * scaleY);
+                    coordInfo.textContent =
+                        `框选区域：原始坐标(${imgX}, ${imgY})  大小 ${imgW}×${imgH}px`;
+                } else {
+                    coordInfo.textContent = '';
+                }
+            }
+
+            // ========== 鼠标事件监听（PC端） ==========
+            overlayCanvas.addEventListener('mousedown', (e) => {
+                if (!originalImage) return;
+                isDrawing = true;
+                const coords = getCanvasCoords(e);
+                startX = coords.x;
+                startY = coords.y;
+                rectX = startX;
+                rectY = startY;
+                rectW = 0;
+                rectH = 0;
+                hasSelection = false;
+                drawSelectionRect();
+            });
+
+            overlayCanvas.addEventListener('mousemove', (e) => {
+                if (!isDrawing) return;
+                const coords = getCanvasCoords(e);
+                // 支持从右往左、从下往上拖拽
+                rectX = Math.min(startX, coords.x);
+                rectY = Math.min(startY, coords.y);
+                rectW = Math.abs(coords.x - startX);
+                rectH = Math.abs(coords.y - startY);
+                drawSelectionRect();
+            });
+
+            overlayCanvas.addEventListener('mouseup', () => {
+                if (!isDrawing) return;
+                isDrawing = false;
+                // 至少需要拖拽 5px 才算有效框选
+                if (rectW >= 5 && rectH >= 5) {
+                    hasSelection = true;
+                } else {
+                    hasSelection = false;
+                    rectW = 0;
+                    rectH = 0;
+                    drawSelectionRect();
+                }
+                updateCoordDisplay();
+            });
+
+            overlayCanvas.addEventListener('mouseleave', () => {
+                if (isDrawing) {
+                    isDrawing = false;
+                    if (rectW >= 5 && rectH >= 5) {
+                        hasSelection = true;
+                    } else {
+                        hasSelection = false;
+                        rectW = 0;
+                        rectH = 0;
+                        drawSelectionRect();
+                    }
+                    updateCoordDisplay();
+                }
+            });
+
+            // ========== 触摸事件监听（移动端） ==========
+            overlayCanvas.addEventListener('touchstart', (e) => {
+                if (!originalImage) return;
+                // 阻止页面滚动
+                e.preventDefault();
+                if (e.touches.length === 1) {
+                    isDrawing = true;
+                    const coords = getCanvasCoords(e);
+                    startX = coords.x;
+                    startY = coords.y;
+                    rectX = startX;
+                    rectY = startY;
+                    rectW = 0;
+                    rectH = 0;
+                    hasSelection = false;
+                    drawSelectionRect();
+                }
+            }, { passive: false });
+
+            overlayCanvas.addEventListener('touchmove', (e) => {
+                if (!isDrawing) return;
+                // 阻止页面滚动
+                e.preventDefault();
+                if (e.touches.length === 1) {
+                    const coords = getCanvasCoords(e);
+                    rectX = Math.min(startX, coords.x);
+                    rectY = Math.min(startY, coords.y);
+                    rectW = Math.abs(coords.x - startX);
+                    rectH = Math.abs(coords.y - startY);
+                    drawSelectionRect();
+                }
+            }, { passive: false });
+
+            overlayCanvas.addEventListener('touchend', (e) => {
+                if (!isDrawing) return;
+                // 阻止页面滚动穿透
+                e.preventDefault();
+                isDrawing = false;
+                if (rectW >= 5 && rectH >= 5) {
+                    hasSelection = true;
+                } else {
+                    hasSelection = false;
+                    rectW = 0;
+                    rectH = 0;
+                    drawSelectionRect();
+                }
+                updateCoordDisplay();
+            });
+
+            // 注意：touchcancel 也需要处理（来电等中断场景）
+            overlayCanvas.addEventListener('touchcancel', () => {
+                isDrawing = false;
+            });
+
+            // ========== 图片上传处理 ==========
+            fileInput.addEventListener('change', (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+
+                // 校验文件类型
+                if (!file.type.startsWith('image/')) {
+                    alert('请选择图片文件！');
+                    return;
+                }
+
+                const reader = new FileReader();
+                reader.onload = (ev) => {
+                    const img = new Image();
+                    img.onload = () => {
+                        originalImage = img;
+                        drawImageToCanvas();
+                        processBtn.disabled = false;
+                        showStatus('图片已加载，请在图片上框选水印区域 ✏️');
+                    };
+                    img.src = ev.target.result;
+                };
+                reader.readAsDataURL(file);
+            });
+
+            // ========== 去水印按钮 ==========
+            processBtn.addEventListener('click', async () => {
+                // 校验：是否有图片
+                if (!originalImage) {
+                    alert('请先上传一张图片！');
+                    return;
+                }
+
+                // 校验：是否已框选水印区域
+                if (!hasSelection || rectW < 5 || rectH < 5) {
+                    alert('⚠️ 请先在图片上用鼠标（或手指）拖拽框选水印区域，再点击去水印！');
+                    return;
+                }
+
+                // 获取缩放因子，计算原始图片坐标
+                const { scaleX, scaleY, offsetX, offsetY } = getScaleFactors();
+                const imgX = Math.round((rectX - offsetX) * scaleX);
+                const imgY = Math.round((rectY - offsetY) * scaleY);
+                const imgW = Math.round(rectW * scaleX);
+                const imgH = Math.round(rectH * scaleY);
+
+                // 获取图片 Base64
+                const imageB64 = getImageBase64();
+
+                // 显示处理中状态
+                processBtn.disabled = true;
+                processBtn.textContent = '⏳ 处理中...';
+                showStatus('正在使用 AI 算法去除水印，请稍候...');
+
+                try {
+                    const response = await fetch('/api/remove-watermark', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            image: imageB64,
+                            x: imgX,
+                            y: imgY,
+                            w: imgW,
+                            h: imgH,
+                        }),
+                    });
+
+                    const data = await response.json();
+
+                    if (data.success) {
+                        // 显示处理结果
+                        processedImageB64 = data.image;
+
+                        // 将结果绘制到画布上
+                        const resultImg = new Image();
+                        resultImg.onload = () => {
+                            originalImage = resultImg;
+                            drawImageToCanvas();
+                            showStatus('✅ 水印去除成功！点击"下载图片"保存结果');
+                            downloadBtn.style.display = 'block';
+                            // 不设 href，改用 JS Blob 方式下载（避免大文件 data URL 限制）
+                            selectionHint.classList.add('hidden');
+                        };
+                        resultImg.src = processedImageB64;
+                    } else {
+                        alert('处理失败：' + data.error);
+                        showStatus('处理失败：' + data.error, true);
+                    }
+                } catch (err) {
+                    alert('网络请求失败：' + err.message);
+                    showStatus('网络请求失败：' + err.message, true);
+                } finally {
+                    processBtn.disabled = false;
+                    processBtn.textContent = '✨ 去水印';
+                }
+            });
+
+            // ========== 获取当前画布图片的 Base64 ==========
+            function getImageBase64() {
+                if (!originalImage) return '';
+                // 将 originalImage 绘制到临时 canvas 获取 base64（保持原始尺寸）
+                const tmpCanvas = document.createElement('canvas');
+                tmpCanvas.width = originalImage.width;
+                tmpCanvas.height = originalImage.height;
+                const tmpCtx = tmpCanvas.getContext('2d');
+                tmpCtx.drawImage(originalImage, 0, 0);
+                return tmpCanvas.toDataURL('image/png');
+            }
+
+            // ========== 下载按钮：Blob 方式避免大文件限制 ==========
+            downloadBtn.addEventListener('click', () => {
+                if (!processedImageB64) {
+                    alert('没有可下载的图片，请先完成去水印处理！');
+                    return;
+                }
+
+                try {
+                    // 将 Base64 转换为 Blob
+                    const base64Data = processedImageB64.split(',')[1] || processedImageB64;
+                    const byteChars = atob(base64Data);
+                    const byteArr = new Uint8Array(byteChars.length);
+                    for (let i = 0; i < byteChars.length; i++) {
+                        byteArr[i] = byteChars.charCodeAt(i);
+                    }
+                    const blob = new Blob([byteArr], { type: 'image/png' });
+
+                    // 创建临时 URL 触发下载
+                    const url = URL.createObjectURL(blob);
+                    const link = document.createElement('a');
+                    link.href = url;
+                    link.download = '去水印结果.png';
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+
+                    // 延迟释放 Blob URL
+                    setTimeout(() => URL.revokeObjectURL(url), 1000);
+                } catch (err) {
+                    alert('下载失败：' + err.message);
+                }
+            });
+
+            // ========== 重置按钮 ==========
+            resetBtn.addEventListener('click', () => {
+                originalImage = null;
+                processedImageB64 = null;
+                hasSelection = false;
+                rectW = 0;
+                rectH = 0;
+
+                // 清空画布
+                imageCanvas.width = 0;
+                imageCanvas.height = 0;
+                overlayCanvas.width = 0;
+                overlayCanvas.height = 0;
+                imageCtx.clearRect(0, 0, imageCanvas.width, imageCanvas.height);
+                overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+
+                // 重置 UI
+                fileInput.value = '';
+                processBtn.disabled = true;
+                downloadBtn.style.display = 'none';
+                placeholderHint.classList.remove('hidden');
+                selectionHint.classList.add('hidden');
+                coordInfo.classList.add('hidden');
+                hideStatus();
+            });
+
+            // ========== 窗口大小变化时重绘 ==========
+            let resizeTimer;
+            window.addEventListener('resize', () => {
+                clearTimeout(resizeTimer);
+                resizeTimer = setTimeout(() => {
+                    if (originalImage) {
+                        // 保存框选状态需要重新计算比例，这里简化：重置框选
+                        const hadSelection = hasSelection;
+                        const prevRectW = rectW;
+                        const prevRectH = rectH;
+                        const prevRectX = rectX;
+                        const prevRectY = rectY;
+
+                        // 计算旧的比例
+                        const oldScale = overlayCanvas.width > 0 ?
+                            overlayCanvas.width / originalImage.width : 1;
+
+                        drawImageToCanvas();
+
+                        if (hadSelection && prevRectW > 0 && prevRectH > 0) {
+                            // 按比例还原框选
+                            const newScale = overlayCanvas.width > 0 ?
+                                overlayCanvas.width / originalImage.width : 1;
+                            const ratio = newScale / oldScale;
+                            rectX = prevRectX * ratio;
+                            rectY = prevRectY * ratio;
+                            rectW = prevRectW * ratio;
+                            rectH = prevRectH * ratio;
+                            hasSelection = true;
+                            drawSelectionRect();
+                            updateCoordDisplay();
+                        }
+                    }
+                }, 200);
+            });
+
+            // ========== 初始化：禁用去水印按钮 ==========
+            processBtn.disabled = true;
+        })();
+    </script>
+</body>
+</html>
