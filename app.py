@@ -48,9 +48,97 @@ def encode_image_to_base64(img: np.ndarray) -> str:
     return f'data:image/png;base64,{b64}'
 
 
+def detect_watermark_pixels(roi: np.ndarray) -> np.ndarray:
+    """
+    智能检测 ROI 区域内哪些像素是水印（而非原始背景）
+
+    核心思路：
+      - 水印通常以半透明叠加或清晰边缘的形式存在
+      - 通过「边缘检测 + 局部亮度偏差 + 色彩偏差」三重分析来定位水印像素
+      - 只标记水印像素，保留背景像素不动 → 避免「橡皮擦」效果
+
+    参数:
+        roi: 框选区域图像 (BGR)
+
+    返回:
+        二值掩码 (0=背景保留, 255=水印需修复)，尺寸与 roi 相同
+    """
+    roi_h, roi_w = roi.shape[:2]
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+
+    # ============ 方法一：边缘检测（捕获水印文字/Logo 轮廓） ============
+    # 低阈值+高阈值，捕获水印的半透明边缘
+    edges = cv2.Canny(gray, 25, 90)
+    # 膨胀边缘，让水印笔画内部也被覆盖
+    edge_mask = cv2.dilate(edges, np.ones((3, 3), np.uint8), iterations=3)
+
+    # ============ 方法二：局部亮度偏差（捕获半透明水印） ============
+    # 大核高斯模糊模拟「没有水印的局部背景亮度」
+    ks = max(5, min(roi_w, roi_h) // 8)
+    if ks % 2 == 0:
+        ks += 1  # 必须为奇数
+    bg_luminance = cv2.GaussianBlur(gray, (ks, ks), 0)
+    # 含水印的像素与局部背景存在亮度差
+    luma_diff = cv2.absdiff(gray, bg_luminance)
+    _, bright_mask = cv2.threshold(luma_diff, 10, 255, cv2.THRESH_BINARY)
+
+    # ============ 方法三：色彩偏差（捕获彩色水印） ============
+    # 将 ROI 转到 Lab 色彩空间，A/B 通道对色彩敏感
+    roi_lab = cv2.cvtColor(roi, cv2.COLOR_BGR2LAB)
+    a_channel = roi_lab[:, :, 1]  # 绿←→红
+    b_channel = roi_lab[:, :, 2]  # 蓝←→黄
+    # 对 A/B 通道做同样的局部偏差检测
+    ks_color = max(5, min(roi_w, roi_h) // 10)
+    if ks_color % 2 == 0:
+        ks_color += 1
+    bg_a = cv2.GaussianBlur(a_channel, (ks_color, ks_color), 0)
+    bg_b = cv2.GaussianBlur(b_channel, (ks_color, ks_color), 0)
+    color_diff = cv2.absdiff(a_channel, bg_a) + cv2.absdiff(b_channel, bg_b)
+    _, color_mask = cv2.threshold(color_diff, 15, 255, cv2.THRESH_BINARY)
+
+    # ============ 方法四：自适应阈值（捕获高对比度水印文字） ============
+    # 对低对比度水印效果好
+    adaptive = cv2.adaptiveThreshold(
+        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY_INV, 21, 6
+    )
+    # 同时做一次正向阈值，合并
+    adaptive2 = cv2.adaptiveThreshold(
+        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY, 21, 6
+    )
+    adaptive_mask = cv2.bitwise_or(adaptive, adaptive2)
+
+    # ============ 合并所有检测结果 ============
+    combined = cv2.bitwise_or(edge_mask, bright_mask)
+    combined = cv2.bitwise_or(combined, color_mask)
+    combined = cv2.bitwise_or(combined, adaptive_mask)
+
+    # ============ 形态学后处理 ============
+    kernel = np.ones((3, 3), np.uint8)
+    # 闭运算：填充水印内部小空洞
+    combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, kernel, iterations=2)
+    # 开运算：去除孤立的噪点
+    combined = cv2.morphologyEx(combined, cv2.MORPH_OPEN, kernel, iterations=1)
+
+    # ============ 安全检查 ============
+    # 如果检测到的像素极少（<3%），说明此区域可能没有明显水印特征
+    # → 回退到整框修复，保证用户至少能去除
+    watermark_ratio = np.sum(combined > 0) / (roi_w * roi_h)
+    if watermark_ratio < 0.03:
+        return np.ones((roi_h, roi_w), dtype=np.uint8) * 255
+
+    return combined
+
+
 def remove_watermark(img: np.ndarray, x: int, y: int, w: int, h: int) -> np.ndarray:
     """
-    使用 OpenCV INPAINT_TELEA 算法去除水印区域
+    智能去水印：先检测水印像素，再精准修复
+
+    与粗暴填充整块矩形不同，本函数会：
+      1. 分析矩形区域内的像素，判断哪些是水印、哪些是背景
+      2. 只对水印像素使用 cv2.inpaint 修复
+      3. 保留框内与背景一致的像素不动
 
     参数:
         img: 原始图像 (BGR)
@@ -68,13 +156,46 @@ def remove_watermark(img: np.ndarray, x: int, y: int, w: int, h: int) -> np.ndar
     w = max(1, min(w, img_width - x))
     h = max(1, min(h, img_height - y))
 
-    # 创建修复遮罩 (mask)：在水印区域标记为白色(255)，其余为黑色(0)
-    mask = np.zeros((img_height, img_width), dtype=np.uint8)
-    mask[y:y + h, x:x + w] = 255
+    # 提取 ROI 并智能检测水印像素
+    roi = img[y:y + h, x:x + w]
 
-    # 使用 INPAINT_TELEA 算法进行修复
-    # radius=3：修复半径，控制修复时参考周围像素的范围
-    result = cv2.inpaint(img, mask, inpaintRadius=3, flags=cv2.INPAINT_TELEA)
+    # 创建智能掩码：只标记水印像素，不碰背景
+    roi_mask = detect_watermark_pixels(roi)
+
+    # 将 ROI 掩码嵌入全图尺寸的掩码中
+    full_mask = np.zeros((img_height, img_width), dtype=np.uint8)
+    full_mask[y:y + h, x:x + w] = roi_mask
+
+    # 使用 INPAINT_TELEA 算法精准修复水印像素
+    # inpaintRadius=5：略大半径让修复过渡更自然
+    result = cv2.inpaint(img, full_mask, inpaintRadius=5, flags=cv2.INPAINT_TELEA)
+
+    # ============ 边缘羽化：让修复区域与周围自然融合 ============
+    # 对修复区域的边界做轻度高斯模糊，消除 inpaint 可能产生的硬边
+    if np.sum(roi_mask > 0) > 0:
+        # 创建软边界掩码（只羽化水印区域的边缘）
+        roi_mask_float = roi_mask.astype(np.float32) / 255.0
+        # 膨胀后减去原掩码 → 得到边界带
+        dilated = cv2.dilate(roi_mask, np.ones((5, 5), np.uint8), iterations=1)
+        boundary = cv2.subtract(dilated, roi_mask)
+        # 对边界做高斯模糊作为混合权重
+        boundary_blur = cv2.GaussianBlur(boundary.astype(np.float32), (5, 5), 0) / 255.0
+
+        if np.sum(boundary_blur) > 0:
+            # 在 ROI 区域内按权重混合原图和修复结果
+            result_roi = result[y:y + h, x:x + w].astype(np.float32)
+            orig_roi = img[y:y + h, x:x + w].astype(np.float32)
+
+            # 边界区域：加权混合 | 非边界区域：直接用修复结果
+            # boundary_blur 只在边界处有值
+            blended = result_roi.copy()
+            for c in range(3):
+                blended[:, :, c] = (
+                    result_roi[:, :, c] * (1 - boundary_blur * 0.5) +
+                    orig_roi[:, :, c] * (boundary_blur * 0.5)
+                )
+
+            result[y:y + h, x:x + w] = blended.astype(np.uint8)
 
     return result
 
