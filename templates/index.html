@@ -315,9 +315,10 @@
                 rectH = 0;
                 updateCoordDisplay();
 
-                // 隐藏下载按钮
-                downloadBtn.style.display = 'none';
-                processedImageB64 = null;
+                // 隐藏下载按钮（仅当无处理结果时清空，避免去水印后变空白图片时误清）
+                if (!processedImageB64) {
+                    downloadBtn.style.display = 'none';
+                }
 
                 // 更新 UI 提示
                 placeholderHint.classList.add('hidden');
