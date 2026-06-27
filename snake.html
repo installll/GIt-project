@@ -99,7 +99,7 @@ function loadSave(){
     if(raw){const d=JSON.parse(raw);return d;}
   }catch(e){}
   // 默认：Lv1 解锁，无通关记录
-  return {unlocked:1, records:{}, totalBest:0};
+  return {unlocked:20, records:{}, totalBest:0};
 }
 function saveGame(data){localStorage.setItem(SAVE_KEY,JSON.stringify(data))}
 
@@ -205,8 +205,6 @@ function endGame(won,reason){
   if(total>save.totalBest)save.totalBest=total;
 
   if(won){
-    // 解锁下一关
-    if(currentLv>=save.unlocked&&currentLv<TOTAL_LEVELS)save.unlocked=currentLv+1;
     saveGame(save);
     const star=score>=targetTotal*9?'⭐⭐⭐':score>=targetTotal*6?'⭐⭐':'⭐';
     showPause('🏆','通关成功！',`得分：${score} ${star}${isNewBest?' 🆕新纪录！':''}`,'再来一次','返回选关');
